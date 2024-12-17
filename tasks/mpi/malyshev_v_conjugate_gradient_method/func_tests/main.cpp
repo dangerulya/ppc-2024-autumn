@@ -9,7 +9,8 @@
 
 namespace malyshev_conjugate_gradient_method {
 
-std::vector<std::vector<double>> generateRandomSymmetricPositiveDefiniteMatrix(uint32_t size, double min_value, double max_value) {
+std::vector<std::vector<double>> generateRandomSymmetricPositiveDefiniteMatrix(uint32_t size, double min_value,
+                                                                               double max_value) {
   std::random_device dev;
   std::mt19937 gen(dev());
   std::uniform_real_distribution<> dis(min_value, max_value);
@@ -60,7 +61,8 @@ TEST(malyshev_conjugate_gradient_method, test_small_system) {
   malyshev_conjugate_gradient_method::TestTaskParallel taskMPI(taskDataPar);
 
   if (world.rank() == 0) {
-    matrix = malyshev_conjugate_gradient_method::generateRandomSymmetricPositiveDefiniteMatrix(size, min_value, max_value);
+    matrix =
+        malyshev_conjugate_gradient_method::generateRandomSymmetricPositiveDefiniteMatrix(size, min_value, max_value);
     b = malyshev_conjugate_gradient_method::generateRandomVector(size, min_value, max_value);
     x.resize(size, 0.0);
 
@@ -115,7 +117,8 @@ TEST(malyshev_conjugate_gradient_method, test_large_system) {
   malyshev_conjugate_gradient_method::TestTaskParallel taskMPI(taskDataPar);
 
   if (world.rank() == 0) {
-    matrix = malyshev_conjugate_gradient_method::generateRandomSymmetricPositiveDefiniteMatrix(size, min_value, max_value);
+    matrix =
+        malyshev_conjugate_gradient_method::generateRandomSymmetricPositiveDefiniteMatrix(size, min_value, max_value);
     b = malyshev_conjugate_gradient_method::generateRandomVector(size, min_value, max_value);
     x.resize(size, 0.0);
 
