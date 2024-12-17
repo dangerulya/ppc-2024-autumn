@@ -1,327 +1,215 @@
 #include "mpi/malyshev_v_conjugate_gradient_method/include/ops_mpi.hpp"
 
 #include <algorithm>
-#include <functional>
-#include <random>
-#include <string>
-#include <thread>
+#include <boost/serialization/vector.hpp>
 #include <vector>
+#include <cmath>
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskSequential::pre_processing() {
+bool malyshev_conjugate_gradient_method::TestTaskSequential::pre_processing() {
   internal_order_test();
 
-  numRowsA_ = taskData->inputs_count[0];
-  numColsA_ = taskData->inputs_count[1];
+  uint32_t size = taskData->inputs_count[0];
 
-  auto* a_data = reinterpret_cast<double*>(taskData->inputs[0]);
-  A_.assign(a_data, a_data + (numRowsA_ * numColsA_));
-  auto* b_data = reinterpret_cast<double*>(taskData->inputs[1]);
-  b_.assign(b_data, b_data + numRowsA_);
+  matrix_.resize(size, std::vector<double>(size));
+  b_.resize(size);
+  x_.resize(size, 0.0);
 
-  x_.resize(numRowsA_, 0.0);
-  r_.resize(numRowsA_, 0.0);
-  p_.resize(numRowsA_, 0.0);
+  double* data;
+  for (uint32_t i = 0; i < size; i++) {
+    data = reinterpret_cast<double*>(taskData->inputs[0]) + i * size;
+    std::copy(data, data + size, matrix_[i].data());
+  }
+
+  data = reinterpret_cast<double*>(taskData->inputs[1]);
+  std::copy(data, data + size, b_.data());
 
   return true;
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskSequential::validation() {
+bool malyshev_conjugate_gradient_method::TestTaskSequential::validation() {
   internal_order_test();
 
-  if (taskData->inputs_count.size() < 2) return false;
+  uint32_t size = taskData->inputs_count[0];
 
-  int temp_numRowsA = taskData->inputs_count[0];
-  int temp_numColsA = taskData->inputs_count[1];
+  if (taskData->inputs.size() != 2 || taskData->inputs_count.size() < 2) {
+    return false;
+  }
 
-  return (temp_numRowsA > 0 && temp_numColsA > 0) &&
-         (taskData->inputs.size() >= 2 && taskData->inputs[0] != nullptr && taskData->inputs[1] != nullptr) &&
-         (!taskData->outputs.empty() && taskData->outputs[0] != nullptr);
+  return taskData->outputs_count[0] == taskData->inputs_count[0];
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskSequential::run() {
+bool malyshev_conjugate_gradient_method::TestTaskSequential::run() {
   internal_order_test();
 
-  // Initialize vectors
-  std::vector<double> Ap(numRowsA_, 0.0);
-  for (int i = 0; i < numRowsA_; i++) {
-    r_[i] = b_[i];
-    p_[i] = r_[i];
+  uint32_t size = taskData->inputs_count[0];
+  std::vector<double> r(size), p(size), Ap(size);
+  double rsold, rsnew, alpha;
+
+  // Initial residual
+  for (uint32_t i = 0; i < size; i++) {
+    r[i] = b_[i];
+    for (uint32_t j = 0; j < size; j++) {
+      r[i] -= matrix_[i][j] * x_[j];
+    }
+    p[i] = r[i];
   }
 
-  double r_norm_sq = 0.0;
-  for (int i = 0; i < numRowsA_; i++) {
-    r_norm_sq += r_[i] * r_[i];
-  }
+  rsold = std::inner_product(r.begin(), r.end(), r.begin(), 0.0);
 
-  for (int iter = 0; iter < numRowsA_; iter++) {
+  for (uint32_t k = 0; k < size; k++) {
     // Compute Ap = A * p
-    std::fill(Ap.begin(), Ap.end(), 0.0);
-    for (int i = 0; i < numRowsA_; i++) {
-      for (int j = 0; j < numColsA_; j++) {
-        Ap[i] += A_[i * numColsA_ + j] * p_[j];
+    for (uint32_t i = 0; i < size; i++) {
+      Ap[i] = 0.0;
+      for (uint32_t j = 0; j < size; j++) {
+        Ap[i] += matrix_[i][j] * p[j];
       }
     }
 
-    // Compute alpha = r_norm_sq / (p' * Ap)
-    double p_dot_Ap = 0.0;
-    for (int i = 0; i < numRowsA_; i++) {
-      p_dot_Ap += p_[i] * Ap[i];
-    }
-    double alpha = r_norm_sq / p_dot_Ap;
+    // Compute alpha = rsold / (p' * Ap)
+    alpha = rsold / std::inner_product(p.begin(), p.end(), Ap.begin(), 0.0);
 
     // Update x and r
-    for (int i = 0; i < numRowsA_; i++) {
-      x_[i] += alpha * p_[i];
-      r_[i] -= alpha * Ap[i];
+    for (uint32_t i = 0; i < size; i++) {
+      x_[i] += alpha * p[i];
+      r[i] -= alpha * Ap[i];
     }
 
-    // Compute new r_norm_sq
-    double r_norm_sq_new = 0.0;
-    for (int i = 0; i < numRowsA_; i++) {
-      r_norm_sq_new += r_[i] * r_[i];
-    }
+    rsnew = std::inner_product(r.begin(), r.end(), r.begin(), 0.0);
 
-    if (r_norm_sq_new < 1e-10) break;
+    if (std::sqrt(rsnew) < 1e-10) break;
 
     // Update p
-    double beta = r_norm_sq_new / r_norm_sq;
-    for (int i = 0; i < numRowsA_; i++) {
-      p_[i] = r_[i] + beta * p_[i];
+    for (uint32_t i = 0; i < size; i++) {
+      p[i] = r[i] + (rsnew / rsold) * p[i];
     }
 
-    r_norm_sq = r_norm_sq_new;
+    rsold = rsnew;
   }
 
   return true;
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskSequential::post_processing() {
+bool malyshev_conjugate_gradient_method::TestTaskSequential::post_processing() {
   internal_order_test();
 
-  auto* data_ptr = reinterpret_cast<double*>(taskData->outputs[0]);
-  std::copy(x_.begin(), x_.end(), data_ptr);
+  std::copy(x_.begin(), x_.end(), reinterpret_cast<double*>(taskData->outputs[0]));
 
   return true;
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel::pre_processing() {
+bool malyshev_conjugate_gradient_method::TestTaskParallel::pre_processing() {
   internal_order_test();
 
-  int rank;
-  MPI_Comm_rank(world, &rank);
-  if (rank == 0) {
-    numRowsA_ = taskData->inputs_count[0];
-    numColsA_ = taskData->inputs_count[1];
-    auto* a_data = reinterpret_cast<double*>(taskData->inputs[0]);
-    A_.assign(a_data, a_data + (numRowsA_ * numColsA_));
-    auto* b_data = reinterpret_cast<double*>(taskData->inputs[1]);
-    b_.assign(b_data, b_data + numRowsA_);
+  if (world.rank() == 0) {
+    uint32_t size = taskData->inputs_count[0];
+
+    delta_ = size / world.size();
+    ext_ = size % world.size();
+
+    matrix_.resize(size, std::vector<double>(size));
+    b_.resize(size);
+    x_.resize(size, 0.0);
+
+    double* data;
+    for (uint32_t i = 0; i < size; i++) {
+      data = reinterpret_cast<double*>(taskData->inputs[0]) + i * size;
+      std::copy(data, data + size, matrix_[i].data());
+    }
+
+    data = reinterpret_cast<double*>(taskData->inputs[1]);
+    std::copy(data, data + size, b_.data());
   }
 
   return true;
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel::validation() {
+bool malyshev_conjugate_gradient_method::TestTaskParallel::validation() {
   internal_order_test();
 
-  int rank;
-  MPI_Comm_rank(world, &rank);
-  if (rank != 0) return true;
-  if (taskData->inputs_count.size() < 2) return false;
+  if (world.rank() == 0) {
+    uint32_t size = taskData->inputs_count[0];
 
-  int temp_numRowsA = taskData->inputs_count[0];
-  int temp_numColsA = taskData->inputs_count[1];
+    if (taskData->inputs.size() != 2 || taskData->inputs_count.size() < 2) {
+      return false;
+    }
 
-  return (temp_numRowsA > 0 && temp_numColsA > 0) &&
-         (taskData->inputs.size() >= 2 && taskData->inputs[0] != nullptr && taskData->inputs[1] != nullptr) &&
-         (!taskData->outputs.empty() && taskData->outputs[0] != nullptr);
+    return taskData->outputs_count[0] == taskData->inputs_count[0];
+  }
+
+  return true;
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel::run() {
+bool malyshev_conjugate_gradient_method::TestTaskParallel::run() {
   internal_order_test();
 
-  int size;
-  int rank;
-  MPI_Comm_size(world, &size);
-  MPI_Comm_rank(world, &rank);
+  broadcast(world, delta_, 0);
+  broadcast(world, ext_, 0);
+  broadcast(world, b_, 0);
 
-  MPI_Bcast(&numRowsA_, 1, MPI_INT, 0, world);
-  MPI_Bcast(&numColsA_, 1, MPI_INT, 0, world);
+  std::vector<int> sizes(world.size(), delta_);
+  for (uint32_t i = 0; i < ext_; i++) {
+    sizes[world.size() - i - 1]++;
+  }
 
-  int q = static_cast<int>(std::floor(std::sqrt(size)));
-  int active_procs = q * q;
+  local_matrix_.resize(sizes[world.rank()]);
+  local_x_.resize(sizes[world.rank()], 0.0);
 
-  int padded_m = q * ((numRowsA_ + q - 1) / q);
-  int padded_n = q * ((numColsA_ + q - 1) / q);
+  scatterv(world, matrix_, sizes, local_matrix_.data(), 0);
 
-  int block_m = padded_m / q;
-  int block_n = padded_n / q;
+  std::vector<double> r(sizes[world.rank()]), p(sizes[world.rank()]), Ap(sizes[world.rank()]);
+  double rsold, rsnew, alpha;
 
-  if (rank == 0) {
-    std::vector<double> A_padded(padded_m * padded_n, 0.0);
-    for (int i = 0; i < numRowsA_; i++) {
-      std::copy(A_.begin() + i * numColsA_, A_.begin() + (i + 1) * numColsA_, A_padded.begin() + i * padded_n);
+  // Initial residual
+  for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+    r[i] = b_[i];
+    for (uint32_t j = 0; j < sizes[world.rank()]; j++) {
+      r[i] -= local_matrix_[i][j] * local_x_[j];
     }
-    A_ = std::move(A_padded);
+    p[i] = r[i];
   }
 
-  bool is_active = (rank < active_procs);
-  int color = is_active ? 1 : MPI_UNDEFINED;
-  MPI_Comm active_comm;
-  MPI_Comm_split(world, color, rank, &active_comm);
+  rsold = std::inner_product(r.begin(), r.end(), r.begin(), 0.0);
 
-  if (!is_active) {
-    return true;
-  }
-
-  MPI_Comm cart_comm;
-  int dims_grid[2] = {q, q};
-  int periods_grid[2] = {1, 1};
-  int reorder_grid = 0;
-  MPI_Cart_create(active_comm, 2, dims_grid, periods_grid, reorder_grid, &cart_comm);
-
-  int cart_rank;
-  MPI_Comm_rank(cart_comm, &cart_rank);
-  int coords[2];
-  MPI_Cart_coords(cart_comm, cart_rank, 2, coords);
-  int row = coords[0];
-  int col = coords[1];
-
-  int left_rank;
-  int right_rank;
-  int up_rank;
-  int down_rank;
-  MPI_Cart_shift(cart_comm, 1, 1, &left_rank, &right_rank);
-  MPI_Cart_shift(cart_comm, 0, 1, &up_rank, &down_rank);
-
-  std::vector<double> A_local(block_m * block_n, 0.0);
-  std::vector<double> b_local(block_m, 0.0);
-  std::vector<double> x_local(block_m, 0.0);
-  std::vector<double> r_local(block_m, 0.0);
-  std::vector<double> p_local(block_n, 0.0);
-
-  if (cart_rank == 0) {
-    for (int p = 0; p < active_procs; ++p) {
-      int p_coords[2];
-      MPI_Cart_coords(cart_comm, p, 2, p_coords);
-      int p_row = p_coords[0];
-      int p_col = p_coords[1];
-
-      std::vector<double> A_block(block_m * block_n, 0.0);
-      for (int i = 0; i < block_m; i++) {
-        int src_index = (p_row * block_m + i) * padded_n + (p_col * block_n);
-        std::copy(A_.begin() + src_index, A_.begin() + src_index + block_n, A_block.begin() + i * block_n);
-      }
-      std::vector<double> b_block(block_m, 0.0);
-      std::copy(b_.begin() + p_row * block_m, b_.begin() + (p_row + 1) * block_m, b_block.begin());
-
-      if (p == 0) {
-        A_local = std::move(A_block);
-        b_local = std::move(b_block);
-      } else {
-        MPI_Send(A_block.data(), block_m * block_n, MPI_DOUBLE, p, 0, cart_comm);
-        MPI_Send(b_block.data(), block_m, MPI_DOUBLE, p, 1, cart_comm);
-      }
-    }
-  } else {
-    MPI_Recv(A_local.data(), block_m * block_n, MPI_DOUBLE, 0, 0, cart_comm, MPI_STATUS_IGNORE);
-    MPI_Recv(b_local.data(), block_m, MPI_DOUBLE, 0, 1, cart_comm, MPI_STATUS_IGNORE);
-  }
-
-  // Initialize vectors
-  for (int i = 0; i < block_m; i++) {
-    r_local[i] = b_local[i];
-    p_local[i] = r_local[i];
-  }
-
-  double r_norm_sq = 0.0;
-  for (int i = 0; i < block_m; i++) {
-    r_norm_sq += r_local[i] * r_local[i];
-  }
-
-  for (int iter = 0; iter < numRowsA_; iter++) {
+  for (uint32_t k = 0; k < sizes[world.rank()]; k++) {
     // Compute Ap = A * p
-    std::vector<double> Ap_local(block_m, 0.0);
-    for (int i = 0; i < block_m; i++) {
-      for (int j = 0; j < block_n; j++) {
-        Ap_local[i] += A_local[i * block_n + j] * p_local[j];
+    for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+      Ap[i] = 0.0;
+      for (uint32_t j = 0; j < sizes[world.rank()]; j++) {
+        Ap[i] += local_matrix_[i][j] * p[j];
       }
     }
 
-    // Compute alpha = r_norm_sq / (p' * Ap)
-    double p_dot_Ap = 0.0;
-    for (int i = 0; i < block_m; i++) {
-      p_dot_Ap += p_local[i] * Ap_local[i];
-    }
-    double alpha = r_norm_sq / p_dot_Ap;
+    // Compute alpha = rsold / (p' * Ap)
+    alpha = rsold / std::inner_product(p.begin(), p.end(), Ap.begin(), 0.0);
 
     // Update x and r
-    for (int i = 0; i < block_m; i++) {
-      x_local[i] += alpha * p_local[i];
-      r_local[i] -= alpha * Ap_local[i];
+    for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+      local_x_[i] += alpha * p[i];
+      r[i] -= alpha * Ap[i];
     }
 
-    // Compute new r_norm_sq
-    double r_norm_sq_new = 0.0;
-    for (int i = 0; i < block_m; i++) {
-      r_norm_sq_new += r_local[i] * r_local[i];
-    }
+    rsnew = std::inner_product(r.begin(), r.end(), r.begin(), 0.0);
 
-    if (r_norm_sq_new < 1e-10) break;
+    if (std::sqrt(rsnew) < 1e-10) break;
 
     // Update p
-    double beta = r_norm_sq_new / r_norm_sq;
-    for (int i = 0; i < block_m; i++) {
-      p_local[i] = r_local[i] + beta * p_local[i];
+    for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+      p[i] = r[i] + (rsnew / rsold) * p[i];
     }
 
-    r_norm_sq = r_norm_sq_new;
+    rsold = rsnew;
   }
 
-  if (cart_rank != 0) {
-    MPI_Send(x_local.data(), block_m, MPI_DOUBLE, 0, 2, cart_comm);
-  } else {
-    x_.resize(padded_m, 0.0);
-    for (int i = 0; i < block_m; i++) {
-      x_[i] = x_local[i];
-    }
-    for (int p = 1; p < active_procs; p++) {
-      std::vector<double> recv_x(block_m);
-      MPI_Recv(recv_x.data(), block_m, MPI_DOUBLE, p, 2, cart_comm, MPI_STATUS_IGNORE);
-
-      int p_coords[2];
-      MPI_Cart_coords(cart_comm, p, 2, p_coords);
-      int p_row = p_coords[0];
-
-      int start_row = p_row * block_m;
-      for (int i = 0; i < block_m; i++) {
-        x_[start_row + i] = recv_x[i];
-      }
-    }
-
-    std::vector<double> x_final(numRowsA_, 0.0);
-    for (int i = 0; i < numRowsA_; i++) {
-      x_final[i] = x_[i];
-    }
-    x_ = std::move(x_final);
-  }
-
-  if (cart_comm != MPI_COMM_NULL) {
-    MPI_Comm_free(&cart_comm);
-  }
-  MPI_Comm_free(&active_comm);
+  gatherv(world, local_x_, x_.data(), sizes, 0);
 
   return true;
 }
 
-bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel::post_processing() {
+bool malyshev_conjugate_gradient_method::TestTaskParallel::post_processing() {
   internal_order_test();
 
-  int rank;
-  MPI_Comm_rank(world, &rank);
-  if (rank == 0) {
-    auto* data_ptr = reinterpret_cast<double*>(taskData->outputs[0]);
-    std::copy(x_.begin(), x_.end(), data_ptr);
+  if (world.rank() == 0) {
+    std::copy(x_.begin(), x_.end(), reinterpret_cast<double*>(taskData->outputs[0]));
   }
 
   return true;

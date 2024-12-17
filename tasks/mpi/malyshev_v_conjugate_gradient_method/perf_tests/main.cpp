@@ -1,97 +1,135 @@
 #include <gtest/gtest.h>
 
 #include <boost/mpi/timer.hpp>
+#include <random>
 #include <vector>
 
 #include "core/perf/include/perf.hpp"
 #include "mpi/malyshev_v_conjugate_gradient_method/include/ops_mpi.hpp"
 
-TEST(malyshev_v_conjugate_gradient_method_mpi, test_task_run) {
-  boost::mpi::communicator world;
-  int numRowsA = 512;
-  int numColsA = 512;
+namespace malyshev_conjugate_gradient_method {
 
-  std::vector<double> A(numRowsA * numColsA, 0.0);
-  for (int i = 0; i < numRowsA * numColsA; i++) {
-    A[i] = i % 100 + 1;
+std::vector<std::vector<double>> generateRandomSymmetricPositiveDefiniteMatrix(uint32_t size) {
+  std::random_device dev;
+  std::mt19937 gen(dev());
+  std::uniform_real_distribution<> dis(0.1, 10.0);
+
+  std::vector<std::vector<double>> matrix(size, std::vector<double>(size));
+
+  for (uint32_t i = 0; i < size; i++) {
+    for (uint32_t j = 0; j <= i; j++) {
+      matrix[i][j] = dis(gen);
+      matrix[j][i] = matrix[i][j];
+    }
   }
-  std::vector<double> b(numRowsA, 0.0);
-  for (int i = 0; i < numRowsA; i++) {
-    b[i] = i % 50 + 1;
+
+  // Make the matrix positive definite by adding a multiple of the identity matrix
+  for (uint32_t i = 0; i < size; i++) {
+    matrix[i][i] += size;
   }
 
-  std::shared_ptr<ppc::core::TaskData> taskData = std::make_shared<ppc::core::TaskData>();
-  std::vector<double> x(numRowsA);
-  if (world.rank() == 0) {
-    taskData->inputs_count.emplace_back(numRowsA);
-    taskData->inputs_count.emplace_back(numColsA);
-    taskData->inputs.emplace_back(reinterpret_cast<uint8_t*>(A.data()));
-    taskData->inputs.emplace_back(reinterpret_cast<uint8_t*>(b.data()));
-
-    taskData->outputs.emplace_back(reinterpret_cast<uint8_t*>(x.data()));
-  }
-  auto testTask = std::make_shared<malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel>(taskData);
-
-  // Create Perf attributes
-  auto perfAttr = std::make_shared<ppc::core::PerfAttr>();
-  perfAttr->num_running = 10;
-  const boost::mpi::timer current_timer;
-  perfAttr->current_timer = [&] { return current_timer.elapsed(); };
-
-  // Create and init perf results
-  auto perfResults = std::make_shared<ppc::core::PerfResults>();
-
-  // Create Perf analyzer
-  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(testTask);
-  perfAnalyzer->task_run(perfAttr, perfResults);
-
-  if (world.rank() == 0) {
-    ppc::core::Perf::print_perf_statistic(perfResults);
-  }
+  return matrix;
 }
 
-TEST(malyshev_v_conjugate_gradient_method_mpi, test_pipeline_run) {
+std::vector<double> generateRandomVector(uint32_t size) {
+  std::random_device dev;
+  std::mt19937 gen(dev());
+  std::uniform_real_distribution<> dis(0.1, 10.0);
+  std::vector<double> vector(size);
+
+  for (auto &el : vector) {
+    el = dis(gen);
+  }
+
+  return vector;
+}
+
+}  // namespace malyshev_conjugate_gradient_method
+
+TEST(malyshev_conjugate_gradient_method, test_pipeline_run) {
+  uint32_t size = 1000;
+
   boost::mpi::communicator world;
-  int numRowsA = 512;
-  int numColsA = 512;
+  std::vector<std::vector<double>> matrix;
+  std::vector<double> b;
+  std::vector<double> x;
 
-  std::vector<double> A(numRowsA * numColsA, 0.0);
-  for (int i = 0; i < numRowsA * numColsA; i++) {
-    A[i] = i % 100 + 1;
-  }
+  std::shared_ptr<ppc::core::TaskData> taskDataPar = std::make_shared<ppc::core::TaskData>();
+  malyshev_conjugate_gradient_method::TestTaskParallel taskMPI(taskDataPar);
 
-  std::vector<double> b(numRowsA, 0.0);
-  for (int i = 0; i < numRowsA; i++) {
-    b[i] = i % 50 + 1;
-  }
-
-  std::shared_ptr<ppc::core::TaskData> taskData = std::make_shared<ppc::core::TaskData>();
-  std::vector<double> x(numRowsA);
   if (world.rank() == 0) {
-    taskData->inputs_count.emplace_back(numRowsA);
-    taskData->inputs_count.emplace_back(numColsA);
-    taskData->inputs.emplace_back(reinterpret_cast<uint8_t*>(A.data()));
-    taskData->inputs.emplace_back(reinterpret_cast<uint8_t*>(b.data()));
+    matrix = malyshev_conjugate_gradient_method::generateRandomSymmetricPositiveDefiniteMatrix(size);
+    b = malyshev_conjugate_gradient_method::generateRandomVector(size);
+    x.resize(size, 0.0);
 
-    taskData->outputs.emplace_back(reinterpret_cast<uint8_t*>(x.data()));
+    taskDataPar->inputs.emplace_back(reinterpret_cast<uint8_t *>(matrix.data()));
+    taskDataPar->inputs.emplace_back(reinterpret_cast<uint8_t *>(b.data()));
+    taskDataPar->inputs_count.push_back(size);
+    taskDataPar->inputs_count.push_back(size);
+    taskDataPar->outputs.emplace_back(reinterpret_cast<uint8_t *>(x.data()));
+    taskDataPar->outputs_count.push_back(size);
   }
 
-  auto testTask = std::make_shared<malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel>(taskData);
+  auto testMpiTaskParallel = std::make_shared<malyshev_conjugate_gradient_method::TestTaskParallel>(taskDataPar);
 
-  // Create Perf attributes
+  ASSERT_TRUE(testMpiTaskParallel->validation());
+  ASSERT_TRUE(testMpiTaskParallel->pre_processing());
+  ASSERT_TRUE(testMpiTaskParallel->run());
+  ASSERT_TRUE(testMpiTaskParallel->post_processing());
+
   auto perfAttr = std::make_shared<ppc::core::PerfAttr>();
   perfAttr->num_running = 10;
   const boost::mpi::timer current_timer;
   perfAttr->current_timer = [&] { return current_timer.elapsed(); };
 
-  // Create and init perf results
   auto perfResults = std::make_shared<ppc::core::PerfResults>();
 
-  // Create Perf analyzer
-  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(testTask);
+  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(testMpiTaskParallel);
   perfAnalyzer->pipeline_run(perfAttr, perfResults);
 
+  if (world.rank() == 0) ppc::core::Perf::print_perf_statistic(perfResults);
+}
+
+TEST(malyshev_conjugate_gradient_method, test_task_run) {
+  uint32_t size = 1000;
+
+  boost::mpi::communicator world;
+  std::vector<std::vector<double>> matrix;
+  std::vector<double> b;
+  std::vector<double> x;
+
+  std::shared_ptr<ppc::core::TaskData> taskDataPar = std::make_shared<ppc::core::TaskData>();
+  malyshev_conjugate_gradient_method::TestTaskParallel taskMPI(taskDataPar);
+
   if (world.rank() == 0) {
-    ppc::core::Perf::print_perf_statistic(perfResults);
+    matrix = malyshev_conjugate_gradient_method::generateRandomSymmetricPositiveDefiniteMatrix(size);
+    b = malyshev_conjugate_gradient_method::generateRandomVector(size);
+    x.resize(size, 0.0);
+
+    taskDataPar->inputs.emplace_back(reinterpret_cast<uint8_t *>(matrix.data()));
+    taskDataPar->inputs.emplace_back(reinterpret_cast<uint8_t *>(b.data()));
+    taskDataPar->inputs_count.push_back(size);
+    taskDataPar->inputs_count.push_back(size);
+    taskDataPar->outputs.emplace_back(reinterpret_cast<uint8_t *>(x.data()));
+    taskDataPar->outputs_count.push_back(size);
   }
+
+  auto testMpiTaskParallel = std::make_shared<malyshev_conjugate_gradient_method::TestTaskParallel>(taskDataPar);
+
+  ASSERT_TRUE(testMpiTaskParallel->validation());
+  ASSERT_TRUE(testMpiTaskParallel->pre_processing());
+  ASSERT_TRUE(testMpiTaskParallel->run());
+  ASSERT_TRUE(testMpiTaskParallel->post_processing());
+
+  auto perfAttr = std::make_shared<ppc::core::PerfAttr>();
+  perfAttr->num_running = 10;
+  const boost::mpi::timer current_timer;
+  perfAttr->current_timer = [&] { return current_timer.elapsed(); };
+
+  auto perfResults = std::make_shared<ppc::core::PerfResults>();
+
+  auto perfAnalyzer = std::make_shared<ppc::core::Perf>(testMpiTaskParallel);
+  perfAnalyzer->task_run(perfAttr, perfResults);
+
+  if (world.rank() == 0) ppc::core::Perf::print_perf_statistic(perfResults);
 }
