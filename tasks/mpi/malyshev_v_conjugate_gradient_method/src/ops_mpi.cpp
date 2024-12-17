@@ -29,8 +29,6 @@ bool malyshev_conjugate_gradient_method::TestTaskSequential::pre_processing() {
 bool malyshev_conjugate_gradient_method::TestTaskSequential::validation() {
   internal_order_test();
 
-  uint32_t size = taskData->inputs_count[0];
-
   if (taskData->inputs.size() != 2 || taskData->inputs_count.size() < 2) {
     return false;
   }
@@ -127,8 +125,6 @@ bool malyshev_conjugate_gradient_method::TestTaskParallel::validation() {
   internal_order_test();
 
   if (world.rank() == 0) {
-    uint32_t size = taskData->inputs_count[0];
-
     if (taskData->inputs.size() != 2 || taskData->inputs_count.size() < 2) {
       return false;
     }
@@ -160,9 +156,9 @@ bool malyshev_conjugate_gradient_method::TestTaskParallel::run() {
   double rsold, rsnew, alpha;
 
   // Initial residual
-  for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+  for (uint32_t i = 0; i < static_cast<uint32_t>(sizes[world.rank()]); i++) {
     r[i] = b_[i];
-    for (uint32_t j = 0; j < sizes[world.rank()]; j++) {
+    for (uint32_t j = 0; j < static_cast<uint32_t>(sizes[world.rank()]); j++) {
       r[i] -= local_matrix_[i][j] * local_x_[j];
     }
     p[i] = r[i];
@@ -170,11 +166,11 @@ bool malyshev_conjugate_gradient_method::TestTaskParallel::run() {
 
   rsold = std::inner_product(r.begin(), r.end(), r.begin(), 0.0);
 
-  for (uint32_t k = 0; k < sizes[world.rank()]; k++) {
+  for (uint32_t k = 0; k < static_cast<uint32_t>(sizes[world.rank()]); k++) {
     // Compute Ap = A * p
-    for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+    for (uint32_t i = 0; i < static_cast<uint32_t>(sizes[world.rank()]); i++) {
       Ap[i] = 0.0;
-      for (uint32_t j = 0; j < sizes[world.rank()]; j++) {
+      for (uint32_t j = 0; j < static_cast<uint32_t>(sizes[world.rank()]); j++) {
         Ap[i] += local_matrix_[i][j] * p[j];
       }
     }
@@ -183,7 +179,7 @@ bool malyshev_conjugate_gradient_method::TestTaskParallel::run() {
     alpha = rsold / std::inner_product(p.begin(), p.end(), Ap.begin(), 0.0);
 
     // Update x and r
-    for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+    for (uint32_t i = 0; i < static_cast<uint32_t>(sizes[world.rank()]); i++) {
       local_x_[i] += alpha * p[i];
       r[i] -= alpha * Ap[i];
     }
@@ -193,7 +189,7 @@ bool malyshev_conjugate_gradient_method::TestTaskParallel::run() {
     if (std::sqrt(rsnew) < 1e-10) break;
 
     // Update p
-    for (uint32_t i = 0; i < sizes[world.rank()]; i++) {
+    for (uint32_t i = 0; i < static_cast<uint32_t>(sizes[world.rank()]); i++) {
       p[i] = r[i] + (rsnew / rsold) * p[i];
     }
 
