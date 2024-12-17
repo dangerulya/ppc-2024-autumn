@@ -160,8 +160,7 @@ bool malyshev_v_conjugate_gradient_method_mpi::TestMPITaskParallel::run() {
   if (rank == 0) {
     std::vector<double> A_padded(padded_m * padded_n, 0.0);
     for (int i = 0; i < numRowsA_; i++) {
-      std::copy(A_.begin() + i * numColsA_, A_.begin() + (i + 1) * numColsA_,
-                A_padded.begin() + i * padded_n);
+      std::copy(A_.begin() + i * numColsA_, A_.begin() + (i + 1) * numColsA_, A_padded.begin() + i * padded_n);
     }
     A_ = std::move(A_padded);
   }
